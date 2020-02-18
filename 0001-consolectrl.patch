@@ -1,0 +1,123 @@
+diff --git a/fs/proc/Kconfig b/fs/proc/Kconfig
+index 1ade120..45322dd 100644
+--- a/fs/proc/Kconfig
++++ b/fs/proc/Kconfig
+@@ -81,3 +81,14 @@ config PROC_CHILDREN
+ 
+ 	  Say Y if you are running any user-space software which takes benefit from
+ 	  this interface. For example, rkt is such a piece of software.
++
++config CONSOLE_CTRL
++	bool "Enable runtime console enable/disable"
++	default m
++	depends on PROC_FS && SERIAL_CORE
++	help
++	  Provides a way to enable/disable a system console from userspace on the
++	  fly.
++	  Example:
++	  - Enable ttyPS0:  echo "ttyPS 0 1" > /proc/consolectrl
++	  - Disable ttyPS2: echo "ttyPS 2 0" > /proc/consolectrl
+diff --git a/fs/proc/Makefile b/fs/proc/Makefile
+index 12c6922..129f672 100644
+--- a/fs/proc/Makefile
++++ b/fs/proc/Makefile
+@@ -31,3 +31,4 @@ proc-$(CONFIG_PROC_KCORE)	+= kcore.o
+ proc-$(CONFIG_PROC_VMCORE)	+= vmcore.o
+ proc-$(CONFIG_PRINTK)	+= kmsg.o
+ proc-$(CONFIG_PROC_PAGE_MONITOR)	+= page.o
++proc-$(CONFIG_CONSOLE_CTRL)	+= consolectrl.o
+diff --git a/fs/proc/consolectrl.c b/fs/proc/consolectrl.c
+new file mode 100644
+index 0000000..3eac409
+--- /dev/null
++++ b/fs/proc/consolectrl.c
+@@ -0,0 +1,88 @@
++/*
++ * Driver for dynamic serial console enable/disable
++ *
++ * Example:
++ *  Enable ttyPS0:  echo "ttyPS 0 1" > /proc/consolectrl
++ *  Disable ttyPS2: echo "ttyPS 2 0" > /proc/consolectrl
++ *
++ * Copyright 2020 SICK AG. All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/console.h>
++#include <linux/proc_fs.h>
++#include <asm/uaccess.h>
++
++MODULE_AUTHOR("Daniel Staf <daniel.staf@sick.se>, Jonas Olofsson <jonas.olofsson@sick.se>");
++MODULE_DESCRIPTION("Disable linux terminals dynamically from userspace");
++MODULE_LICENSE("GPL");
++
++static struct proc_dir_entry *proc_entry;
++
++static ssize_t write(struct file *file, const char __user *ubuf, size_t count, loff_t *ppos)
++{
++	struct console *con;
++	char buf[64] = {0};
++	char name[sizeof(con->name)] = {0};
++	int index, enable, nargs, c;
++
++	if(*ppos > 0 || count > sizeof(buf))
++		return -EFAULT;
++	if(copy_from_user(buf, ubuf, count))
++		return -EFAULT;
++	nargs = sscanf(buf, "%s %d %d", name, &index, &enable);
++	if(nargs != 3)
++		return -EINVAL;
++
++	for_each_console(con) {
++		if (!strcmp((const char*)con->name, name) && (con->index == index))
++		{
++			if (enable) {
++				printk(KERN_INFO "Starting console %s%d\n", con->name, con->index);
++				console_start(con);
++			} else {
++				printk(KERN_INFO "Stopping console %s%d\n", con->name, con->index);
++				console_stop(con);
++			}
++			c = strlen(buf);
++			*ppos = c;
++			return c;
++		}
++	}
++	printk(KERN_WARNING "Console not found %s%d!", name, index);
++	return -EINVAL;
++}
++
++static struct file_operations consolectrl_ops =
++{
++	.owner = THIS_MODULE,
++	.write = write,
++};
++
++static int init(void)
++{
++	proc_entry = proc_create("consolectrl", 0660, NULL, &consolectrl_ops);
++	return 0;
++}
++
++static void cleanup(void)
++{
++	proc_remove(proc_entry);
++}
++
++module_init(init);
++module_exit(cleanup);
+\ No newline at end of file
